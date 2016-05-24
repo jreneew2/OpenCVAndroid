@@ -17,8 +17,15 @@ import org.opencv.android.OpenCVLoader;
 import org.opencv.core.Core;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
+import org.opencv.core.MatOfInt;
+import org.opencv.core.MatOfPoint;
+import org.opencv.core.Point;
+import org.opencv.core.Rect;
+import org.opencv.core.Scalar;
 import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
+
+import java.util.ArrayList;
 
 // OpenCV Classes
 
@@ -36,12 +43,36 @@ public class MainActivity extends AppCompatActivity implements CvCameraViewListe
 
     // These variables are used (at the moment) to fix camera orientation from 270degree to 0degree
     Mat mRgba;
-    Mat mRgbaF;
-    Mat mRgbaT;
+    Mat mRgb;
     Mat mResize;
+    Mat mHsv;
+    Mat mRgbaT;
+    Mat mRgbaF;
     Mat mThresh;
-
+    Mat hierarchy;
     Size sResize;
+    Size sOriginal;
+    Scalar lowerBounds;
+    Scalar upperBounds;
+    Scalar RED;
+    Point centerPixel;
+    Point targetTextX;
+    Point targetTextY;
+    Point targetCenter;
+
+    int RECTANCLE_AREA_SIZE = 100;
+    double SOLIDITY_MIN = 0.04;
+    double SOLIDITY_MAX = 0.4;
+    int ASPECT_RATIO = 1;
+    double CAMERA_FOV = 47;
+    double PI = 3.1415926535897;
+
+    double centerX, centerY;
+    double angleToTarget;
+
+    ArrayList<MatOfPoint> contours;
+    ArrayList<MatOfPoint> selected;
+    MatOfInt hull;
 
     private BaseLoaderCallback mLoaderCallback = new BaseLoaderCallback(this) {
         @Override
@@ -110,10 +141,23 @@ public class MainActivity extends AppCompatActivity implements CvCameraViewListe
 
     public void onCameraViewStarted(int width, int height) {
 
-        mRgba = new Mat(height, width, CvType.CV_8UC4);
-        mRgbaF = new Mat(height, width, CvType.CV_8UC4);
-        mRgbaT = new Mat(width, width, CvType.CV_8UC4);
-        sResize = new Size(320, 240);
+        mRgba = new Mat(width, height, CvType.CV_8UC4);
+        mRgb = new Mat(width, height, CvType.CV_8UC3);
+        mHsv = new Mat(width, height, CvType.CV_8UC3);
+        mResize = new Mat(320, 320, CvType.CV_8UC4);
+        mThresh = new Mat(320, 320, CvType.CV_8UC2);
+        mRgbaT = new Mat(width, height, CvType.CV_8UC4);
+        mRgbaF = new Mat(width, height, CvType.CV_8UC4);
+        hull = new MatOfInt();
+        hierarchy = new Mat(width, height, CvType.CV_8UC3);
+        lowerBounds = new Scalar(0, 0, 0);
+        upperBounds = new Scalar(20, 255, 255);
+        RED = new Scalar(255, 0, 0);
+        sResize = new Size(320, 320);
+        sOriginal = new Size(960, 960);
+        centerPixel = new Point(sResize.width / 2 - .5, sResize.height / 2 - .5);
+        contours = new ArrayList<MatOfPoint>();
+        selected = new ArrayList<MatOfPoint>();
     }
 
     public void onCameraViewStopped() {
@@ -122,10 +166,76 @@ public class MainActivity extends AppCompatActivity implements CvCameraViewListe
 
     public Mat onCameraFrame(CvCameraViewFrame inputFrame) {
 
-        // TODO Auto-generated method stub
+        contours.clear();
+        selected.clear();
+
         mRgba = inputFrame.rgba();
         Imgproc.resize(mRgba, mResize, sResize);
-        mResize;
+        Imgproc.cvtColor(mResize, mRgb, Imgproc.COLOR_RGBA2RGB);
+        Imgproc.cvtColor(mRgb, mHsv, Imgproc.COLOR_RGB2HSV);
+        Core.inRange(mHsv, lowerBounds, upperBounds, mThresh);
+        Imgproc.findContours(mThresh, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        filterContours();
+        drawTarget();
+
+        if(selected.size() == 1) {
+            Rect targetRectangle = Imgproc.boundingRect(selected.get(0));
+            centerX = targetRectangle.br().x - targetRectangle.width / 2;
+            centerY = targetRectangle.br().y - targetRectangle.height / 2;
+            targetCenter = new Point(centerX, centerY);
+            Imgproc.line(mResize, centerPixel, targetCenter, RED);
+            Imgproc.circle(mResize, targetCenter, 3, RED);
+            DrawCoords(targetRectangle);
+            angleToTarget = CalculateAngleBetweenCameraAndPixel();
+        }
+        Imgproc.resize(mResize, mRgba, sOriginal);
+        Core.transpose(mRgba, mRgbaT);
+        Imgproc.resize(mRgbaT, mRgbaF, mRgbaF.size(), 0,0, 0);
+        Core.flip(mRgbaF, mRgba, 1 );
         return mRgba; // This function must return
+    }
+
+    private void filterContours() {
+        for (int i = 0; i < contours.size(); i++) {
+            Rect rect = Imgproc.boundingRect(contours.get(i));
+            float aspect = (float)rect.width / (float)rect.height;
+
+            //does solidity calculations
+            //Imgproc.convexHull(contours.get(i), hull);
+            //double area = Imgproc.contourArea(contours.get(i));
+
+
+            //double hull_area = Imgproc.contourArea(hull);
+            //double solidity = (float)area / hull_area;
+
+            if(aspect > 1 && rect.area() > 400) {
+                selected.add(contours.get(i));
+            }
+            /*if (aspect > ASPECT_RATIO && rect.area() > RECTANCLE_AREA_SIZE && (solidity >= SOLIDITY_MIN && solidity <= SOLIDITY_MAX)) {
+
+            }*/
+        }
+    }
+
+    private void drawTarget() {
+        for (int i = 0; i < selected.size(); i++) {
+            Rect rect = Imgproc.boundingRect(selected.get(i));
+            Imgproc.rectangle(mResize, rect.br(), rect.tl(), RED);
+        }
+    }
+
+    private void DrawCoords(Rect targetBoundingRect) {
+        Rect rect = targetBoundingRect;
+        targetTextX = new Point(rect.br().x - rect.width / 2 - 15, rect.br().y - rect.height / 2 - 20);
+        targetTextY = new Point(rect.br().x - rect.width / 2 - 15, rect.br().y - rect.height / 2);
+        Imgproc.putText(mResize, Double.toString(centerX), targetTextX, Core.FONT_HERSHEY_PLAIN, 1, RED);
+        Imgproc.putText(mResize, Double.toString(centerY), targetTextY, Core.FONT_HERSHEY_PLAIN, 1, RED);
+    }
+
+    private double CalculateAngleBetweenCameraAndPixel() {
+        double focalLengthPixels = .5 * sResize.width / Math.tan((CAMERA_FOV * (PI / 180)) / 2);
+        double angle = Math.atan((targetCenter.x - centerPixel.x) / focalLengthPixels);
+        double angleDegrees = angle * (180 / PI);
+        return angleDegrees;
     }
 }
